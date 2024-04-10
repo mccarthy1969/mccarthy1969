@@ -4,7 +4,6 @@
 - 🌱 I’m currently extending my learning of Python and Django
 - 💞️ I’m looking to collaborate on anything AWS/Python
 - 📫 How to reach me gmail @ michael.s.mccarthy@gmail.com
-- 😄 Pronouns: Dude
 - ⚡ Fun fact: I have a chihuahua named Lil Papi 
 
 <!---
