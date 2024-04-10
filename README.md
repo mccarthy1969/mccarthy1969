@@ -1,4 +1,5 @@
-- 👋 Hi, I’m @mccarthy1969
+- 👋 Hi, I’m @mccarthy1969 aka Michael McCarthy
+- This is a repository for some of my own coding projects and examples
 - 👀 I’m interested in Python, Django, AWS, Azure and GCP
 - 🌱 I’m currently extending my learning of Python and Django
 - 💞️ I’m looking to collaborate on anything AWS/Python
