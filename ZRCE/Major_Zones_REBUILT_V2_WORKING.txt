@@ -1,0 +1,320 @@
+# SPY MAJOR SUPPLY AND DEMAND
+# REBUILT VERSION 2
+#
+# USE ON A 5-MINUTE SPY CHART
+# Regular market hours only
+# 9:30 AM Eastern = 8:30 AM Central
+#
+# Zones appear after the second
+# confirming candle has closed.
+
+declare upper;
+
+input zoneSize = 0.05;
+input meetingTolerance = 0.05;
+input showClouds = yes;
+input showBubbles = yes;
+
+# ==========================================
+# TRADING SESSION
+# ==========================================
+
+def tradingDay = GetYYYYMMDD();
+
+def newDay =
+    tradingDay != tradingDay[1];
+
+def inSession =
+    SecondsFromTime(0930) >= 0 and
+    SecondsTillTime(1600) > 0;
+
+def validPair =
+    inSession and
+    inSession[1] and
+    inSession[2] and
+    tradingDay == tradingDay[1] and
+    tradingDay == tradingDay[2];
+
+# ==========================================
+# DEMAND CANDLE PATTERN
+# ==========================================
+
+# First candle is red.
+# Second candle is green.
+# Their body bottoms meet.
+
+def demandPattern =
+    validPair and
+    close[2] < open[2] and
+    close[1] > open[1] and
+    AbsValue(close[2] - open[1])
+        <= meetingTolerance;
+
+# ==========================================
+# SUPPLY CANDLE PATTERN
+# ==========================================
+
+# First candle is green.
+# Second candle is red.
+# Their body tops meet.
+
+def supplyPattern =
+    validPair and
+    close[2] > open[2] and
+    close[1] < open[1] and
+    AbsValue(close[2] - open[1])
+        <= meetingTolerance;
+
+# ==========================================
+# CANDIDATE ZONE PRICES
+# ==========================================
+
+def demandCandidate =
+    Min(close[2], open[1]);
+
+def supplyCandidate =
+    Max(close[2], open[1]);
+
+# ==========================================
+# TRACK WHETHER ZONES EXIST
+# ==========================================
+
+rec demandFound = CompoundValue(
+    1,
+    if newDay then 0
+    else if demandPattern then 1
+    else demandFound[1],
+    0
+);
+
+rec supplyFound = CompoundValue(
+    1,
+    if newDay then 0
+    else if supplyPattern then 1
+    else supplyFound[1],
+    0
+);
+
+# ==========================================
+# TRACK MAJOR DEMAND
+# ==========================================
+
+rec majorDemand = CompoundValue(
+    1,
+    if newDay then 0
+    else if demandPattern then
+        if demandFound[1] == 0
+        then demandCandidate
+        else Min(
+            majorDemand[1],
+            demandCandidate
+        )
+    else majorDemand[1],
+    0
+);
+
+# ==========================================
+# TRACK MAJOR SUPPLY
+# ==========================================
+
+rec majorSupply = CompoundValue(
+    1,
+    if newDay then 0
+    else if supplyPattern then
+        if supplyFound[1] == 0
+        then supplyCandidate
+        else Max(
+            majorSupply[1],
+            supplyCandidate
+        )
+    else majorSupply[1],
+    0
+);
+
+# ==========================================
+# DETECT NEW MAJOR ZONES
+# ==========================================
+
+def newMajorDemand =
+    demandPattern and
+    (
+        demandFound[1] == 0 or
+        demandCandidate < majorDemand[1]
+    );
+
+def newMajorSupply =
+    supplyPattern and
+    (
+        supplyFound[1] == 0 or
+        supplyCandidate > majorSupply[1]
+    );
+
+# ==========================================
+# DEMAND ZONE BOUNDARIES
+# ==========================================
+
+plot DemandBottom =
+    if demandFound
+    then majorDemand
+    else Double.NaN;
+
+plot DemandTop =
+    if demandFound
+    then majorDemand + zoneSize
+    else Double.NaN;
+
+DemandBottom.SetDefaultColor(
+    Color.DARK_GREEN
+);
+
+DemandTop.SetDefaultColor(
+    Color.DARK_GREEN
+);
+
+DemandBottom.SetLineWeight(3);
+DemandTop.SetLineWeight(3);
+
+# ==========================================
+# SUPPLY ZONE BOUNDARIES
+# ==========================================
+
+plot SupplyTop =
+    if supplyFound
+    then majorSupply
+    else Double.NaN;
+
+plot SupplyBottom =
+    if supplyFound
+    then majorSupply - zoneSize
+    else Double.NaN;
+
+SupplyTop.SetDefaultColor(
+    Color.DARK_RED
+);
+
+SupplyBottom.SetDefaultColor(
+    Color.DARK_RED
+);
+
+SupplyTop.SetLineWeight(3);
+SupplyBottom.SetLineWeight(3);
+
+# ==========================================
+# CLOUD BOUNDARIES
+# ==========================================
+
+plot DemandShadeTop =
+    if showClouds
+    then DemandTop
+    else Double.NaN;
+
+plot DemandShadeBottom =
+    if showClouds
+    then DemandBottom
+    else Double.NaN;
+
+plot SupplyShadeTop =
+    if showClouds
+    then SupplyTop
+    else Double.NaN;
+
+plot SupplyShadeBottom =
+    if showClouds
+    then SupplyBottom
+    else Double.NaN;
+
+DemandShadeTop.Hide();
+DemandShadeBottom.Hide();
+
+SupplyShadeTop.Hide();
+SupplyShadeBottom.Hide();
+
+# ==========================================
+# DRAW DEMAND AND SUPPLY CLOUDS
+# ==========================================
+
+AddCloud(
+    DemandShadeTop,
+    DemandShadeBottom,
+    Color.DARK_GREEN,
+    Color.DARK_GREEN
+);
+
+AddCloud(
+    SupplyShadeTop,
+    SupplyShadeBottom,
+    Color.DARK_RED,
+    Color.DARK_RED
+);
+
+# ==========================================
+# LABELS
+# ==========================================
+
+AddLabel(
+    yes,
+    if demandFound
+    then "MAJOR DEMAND: $" +
+        AsText(Round(majorDemand, 2))
+    else "MAJOR DEMAND: Not Found",
+    Color.GREEN
+);
+
+AddLabel(
+    yes,
+    if supplyFound
+    then "MAJOR SUPPLY: $" +
+        AsText(Round(majorSupply, 2))
+    else "MAJOR SUPPLY: Not Found",
+    Color.RED
+);
+
+# ==========================================
+# DIAGNOSTIC LABELS
+# ==========================================
+
+AddLabel(
+    yes,
+    "SESSION: " +
+    (if inSession
+     then "OPEN"
+     else "CLOSED"),
+    if inSession
+    then Color.GREEN
+    else Color.GRAY
+);
+
+AddLabel(
+    yes,
+    "PAIR READY: " +
+    (if validPair
+     then "YES"
+     else "NO"),
+    if validPair
+    then Color.GREEN
+    else Color.YELLOW
+);
+
+# ==========================================
+# MARK NEW MAJOR DEMAND
+# ==========================================
+
+AddChartBubble(
+    showBubbles and newMajorDemand,
+    demandCandidate,
+    "NEW DEMAND",
+    Color.GREEN,
+    no
+);
+
+# ==========================================
+# MARK NEW MAJOR SUPPLY
+# ==========================================
+
+AddChartBubble(
+    showBubbles and newMajorSupply,
+    supplyCandidate,
+    "NEW SUPPLY",
+    Color.RED,
+    yes
+);
