@@ -874,7 +874,9 @@ def simShortTargetCents =
     else Round(ptLastSupplyTarget * 100, 0);
 
 # ============================================================
-# VALIDATION
+# STRATEGY ENTRY VALIDATION
+# All entry eligibility rules live together in this section.
+# Risk/reward distances are positive integer cents.
 # ============================================================
 
 def simLongTargetValid =
@@ -906,17 +908,37 @@ def simShortPricesValid =
     simShortTargetCents > 0 and
     simShortTargetCents < 100000;
 
+# NEW RULE: minimum reward/risk = 1.0 (equal is allowed).
+# Calculate only from the same rounded-cent prices used by
+# the simulator's entry record, to avoid float rounding drift.
+def simLongPotentialProfitCents =
+    AbsValue(simLongTargetCents - simOpenCents);
+def simLongPotentialLossCents =
+    AbsValue(simOpenCents - simLongStopCents);
+def simShortPotentialProfitCents =
+    AbsValue(simOpenCents - simShortTargetCents);
+def simShortPotentialLossCents =
+    AbsValue(simShortStopCents - simOpenCents);
+
+def simLongRewardRiskOK =
+    simLongPotentialProfitCents >= simLongPotentialLossCents;
+def simShortRewardRiskOK =
+    simShortPotentialProfitCents >= simShortPotentialLossCents;
+
+# Consolidated entry gates. Future strategy rules belong here.
 def simLongCandidate =
     longDirectionOK and
     simLongTargetValid and
     simLongStopValid and
-    simLongPricesValid;
+    simLongPricesValid and
+    simLongRewardRiskOK;
 
 def simShortCandidate =
     shortDirectionOK and
     simShortTargetValid and
     simShortStopValid and
-    simShortPricesValid;
+    simShortPricesValid and
+    simShortRewardRiskOK;
 
 def simClosingBar =
     SecondsFromTime(1559) >= 0 and
@@ -1318,11 +1340,20 @@ def simRejectedPriceRange =
         )
     );
 
+def simRejectedRewardRisk =
+    directionOK and
+    !simRejectedTarget and
+    !simRejectedStop and
+    !simRejectedPriceRange and
+    ((longDirectionOK and !simLongRewardRiskOK) or
+     (shortDirectionOK and !simShortRewardRiskOK));
+
 def simRejectedBusy =
     directionOK and
     !simRejectedTarget and
     !simRejectedStop and
     !simRejectedPriceRange and
+    !simRejectedRewardRisk and
     simPriorPosition != 0;
 
 def simRejectedSession =
@@ -1330,6 +1361,7 @@ def simRejectedSession =
     !simRejectedTarget and
     !simRejectedStop and
     !simRejectedPriceRange and
+    !simRejectedRewardRisk and
     !simRejectedBusy and
     simClosingBar;
 
@@ -1338,6 +1370,7 @@ def simUnexpectedNoEntry =
     !simRejectedTarget and
     !simRejectedStop and
     !simRejectedPriceRange and
+    !simRejectedRewardRisk and
     !simRejectedBusy and
     !simRejectedSession and
     !simBuy and
@@ -1369,6 +1402,9 @@ AddChartBubble(
 
     else if simRejectedPriceRange then
         "SIM REJECT: PRICE RANGE"
+
+    else if simRejectedRewardRisk then
+        "SIM REJECT: RISK/REWARD"
 
     else if simRejectedBusy then
         "SIM REJECT: ALREADY IN TRADE"
@@ -1527,6 +1563,9 @@ AddLabel(
 
     else if simRejectedPriceRange
     then "SIM DIAG: PRICE RANGE"
+
+    else if simRejectedRewardRisk
+    then "SIM DIAG: RISK/REWARD REJECT"
 
     else if simRejectedBusy
     then "SIM DIAG: ALREADY IN TRADE"
