@@ -1,0 +1,19 @@
+{
+  "zoneSize": 0.05,
+  "meetingTolerance": 0.05,
+  "cooldownMinutes": 10,
+  "minRR": 1,
+  "stopLookback": 3,
+  "directionGate": true,
+  "direction": "both",
+  "targetMode": "zone",
+  "fixedRR": 2,
+  "shares": 100,
+  "spread": 0.05,
+  "slippage": 0,
+  "feePerShare": 0,
+  "initialCapital": 100000,
+  "sessionStart": "09:30",
+  "sessionEnd": "16:00",
+  "sessionOverrides": {}
+}

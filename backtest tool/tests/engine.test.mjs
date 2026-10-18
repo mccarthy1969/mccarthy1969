@@ -1,0 +1,29 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {resolveExit,simulateDay,summarize} from '../lib/engine.mjs';
+import {defaults,validateConfig,ZRCE} from '../lib/strategy.mjs';
+import {aggregate,marketTime} from '../lib/market.mjs';
+const c={...defaults,spread:0,slippage:0};
+const p={dir:1,entry:100,stop:99,target:102};
+test('long and short exit ambiguity is excluded',()=>{assert.deepEqual(resolveExit(p,{o:100,h:103,l:98},c),{price:null,reason:'AMBIGUOUS',excluded:true});assert.equal(resolveExit({dir:-1,entry:100,stop:101,target:98},{o:100,h:102,l:97},c).excluded,true);});
+test('opening gap resolves before subsequent ambiguous range',()=>{assert.equal(resolveExit(p,{o:98.5,h:103,l:98},c).price,98.5);assert.equal(resolveExit(p,{o:103,h:104,l:98},c).price,102);assert.equal(resolveExit({dir:-1,stop:101,target:98},{o:102,h:103,l:97},c).price,102);});
+test('spread changes executable triggers and slippage is adverse',()=>{const cost={...c,spread:.02,slippage:.005};assert.equal(resolveExit(p,{o:100,h:102,l:99.5},cost),null);assert.equal(resolveExit(p,{o:100,h:102.02,l:99.5},cost).price,102);assert.equal(resolveExit(p,{o:100,h:101,l:99},cost).price,98.995);const short={dir:-1,stop:101,target:98};assert.equal(resolveExit(short,{o:100,h:101,l:99},cost).price,101.005);});
+test('aggregation preserves OHLC and volume',()=>{const r=aggregate([{t:120,o:1,h:3,l:1,c:2,v:10},{t:121,o:2,h:4,l:.5,c:3,v:20},{t:180,o:3,h:3,l:2,c:2,v:4}]);assert.deepEqual(r[0],{t:120,o:1,h:4,l:.5,c:3,v:30,n:2});assert.equal(r.length,2);});
+test('New York session clock handles daylight saving',()=>{assert.equal(marketTime(Date.parse('2025-01-06T14:30:00Z')/1000).minute,570);assert.equal(marketTime(Date.parse('2025-07-07T13:30:00Z')/1000).minute,570);});
+test('report excludes ambiguous trades and computes realized drawdown',()=>{const rows=[10,-5,-8,20].map((pnl,i)=>({pnl,gross:pnl+1,fees:1,excluded:false,exitTime:i,dir:1,day:'2025-01-06'}));rows.push({excluded:true,pnl:null});const s=summarize(rows,100);assert.equal(s.net,17);assert.equal(s.maxDrawdown,13);assert.equal(s.trades,4);assert.equal(s.excluded,1);assert.equal(s.fees,4);assert.equal(s.winRate,.5);assert.equal(s.returnPct,.17);});
+test('reject invalid execution and session settings',()=>{assert.throws(()=>validateConfig({spread:-1}));assert.throws(()=>validateConfig({shares:1.2}));assert.throws(()=>validateConfig({sessionStart:'25:00'}));assert.throws(()=>validateConfig({sessionOverrides:{'2025-11-28':'09:00'}}));assert.equal(validateConfig({spread:.01}).spread,.01);});
+// Independent fixture: two completed 5m candles create a demand zone at 100.
+function fixture(){const start=Date.parse('2025-01-06T14:30:00Z')/1000;const specs=[];for(let i=0;i<5;i++)specs.push({o:101,h:101.1,l:99.9,c:100});for(let i=0;i<5;i++)specs.push({o:100,h:102.1,l:99.95,c:102});specs.push({o:102,h:102.1,l:101.4,c:101.5}); // run complete -> target 102
+ for(let i=0;i<5;i++)specs.push({o:101.8,h:101.9,l:101.3,c:101.5}); specs.push({o:101,h:101.1,l:100,c:100.01}); // Z
+ specs.push({o:100.01,h:100.2,l:100,c:100.15}); // R
+ specs.push({o:100.15,h:100.4,l:100.1,c:100.3}); // C
+ specs.push({o:100.3,h:102.2,l:100.25,c:102}); // E and target
+ return {start,minutes:specs.map((x,i)=>({...x,t:start+i*60,v:60}))};}
+test('ZRCE creates zone only after 10 completed minutes and respects ZRC sequence',()=>{const {minutes}=fixture(),s=new ZRCE({...c,shares:1});const signals=[];for(let i=0;i<minutes.length;i++){const b=minutes[i],sig=s.onOpen({t:b.t,o:b.o},570+i);if(i<10)assert.equal(s.demand,0);if(sig)signals.push(sig);s.onClose(b);}assert.equal(s.zones[0].t,minutes[10].t);assert.equal(signals.length,1);assert.equal(signals[0].t,minutes[19].t);assert.equal(signals[0].stop,100);assert.equal(signals[0].target,102);assert.deepEqual(s.events.map(x=>x.label),['Z','R','C']);});
+test('same entry second exits and no minute-high lookahead at signal time',()=>{const {minutes}=fixture();const rows=minutes.map((b,i)=>({...b,minute:570+i}));const r=simulateDay(rows,{...c,shares:1},'2025-01-06');assert.equal(r.trades.length,1);assert.equal(r.trades[0].reason,'TARGET');assert.equal(r.trades[0].duration,0);assert.ok(Math.abs(r.trades[0].pnl-1.7)<1e-8);});
+test('entry second both touched is retained as excluded ledger record',()=>{const {minutes}=fixture();minutes.at(-1).l=99.9;const r=simulateDay(minutes.map((b,i)=>({...b,minute:570+i})),c,'2025-01-06');assert.equal(r.trades.length,1);assert.equal(r.trades[0].reason,'AMBIGUOUS');assert.equal(r.trades[0].pnl,null);});
+test('missing minute prevents using stale confirmation for entry',()=>{const {minutes}=fixture();const s=new ZRCE(c);for(let i=0;i<19;i++){s.onOpen({t:minutes[i].t,o:minutes[i].o},570+i);s.onClose(minutes[i]);}const late={...minutes[19],t:minutes[19].t+60};assert.equal(s.onOpen(late,585),null);});
+test('short ZRC mirror creates supply, enters short and hits target',()=>{const {minutes}=fixture();const rows=minutes.map((b,i)=>({...b,o:200-b.o,c:200-b.c,h:200-b.l,l:200-b.h,minute:570+i}));const r=simulateDay(rows,{...c,shares:1},'2025-01-06');assert.equal(r.trades.length,1);assert.equal(r.trades[0].dir,-1);assert.equal(r.trades[0].stop,100);assert.equal(r.trades[0].target,98);assert.equal(r.trades[0].reason,'TARGET');assert.ok(Math.abs(r.trades[0].pnl-1.7)<1e-8);});
+test('unfinished session position excluded, early close override permits closing',()=>{const {minutes}=fixture();minutes[19]={...minutes[19],h:100.5,c:100.4};const rows=minutes.map((b,i)=>({...b,minute:570+i}));let r=simulateDay(rows,c,'2025-01-06');assert.equal(r.trades[0].reason,'DATA_END');assert.equal(r.trades[0].excluded,true); // Entry forbidden during configured final minute.
+ r=simulateDay(rows,{...c,sessionOverrides:{'2025-01-06':'09:50'}},'2025-01-06');assert.equal(r.trades.length,0);});
+

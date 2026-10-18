@@ -1,0 +1,1833 @@
+# STAGE A STRATEGY V1.4 - SIMULATED NATIVE REPORT
+# Based on GitHub v1.1 blob da9b611701e464020470dc6a2c3ca09396377be6.
+# Results are SPY dollars per share, NOT 0 DTE option returns.
+# Install under Strategies. AddOrder creates hypothetical report orders.
+# Chart must be a TIME chart; aggregation values alone cannot identify chart type.
+
+# ============================================================
+# ZRCE VERSION 3.3 TEST
+# SPY 1-MINUTE CHART
+#
+# FIXED SIMULATOR RECORD
+# EXACT INTEGER-CENT STOP/TARGET STORAGE
+# SEPARATE LOCKED ENTRY REGISTER
+# EXPLICIT ENTRY REJECTION DIAGNOSTICS
+#
+# MAJOR ZONES V4.9 IS A SEPARATE STUDY
+# ============================================================
+
+declare upper;
+
+# ============================================================
+# INPUTS
+# ============================================================
+
+input zoneSize = 0.05;
+input meetingTolerance = 0.05;
+input cooldownMinutes = 10;
+
+input showZ = yes;
+input showR = yes;
+input showC = yes;
+input showE = yes;
+
+input showZones = yes;
+input showStatus = yes;
+input showEntryDiagnostic = yes;
+input showProfitTargets = yes;
+input showTPDiagnostics = yes;
+
+input showMockTrades = yes;
+input showMockStats = yes;
+input showSimDiagnostics = yes;
+input showHistoricalDiagnostics = yes;
+
+# ============================================================
+# SESSION
+# ============================================================
+
+def stageAChartOK =
+    GetSymbol() == "SPY" and
+    GetAggregationPeriod() == AggregationPeriod.MIN;
+
+AddLabel(yes,
+    if stageAChartOK then "STAGE A STRATEGY v1.4 | SIM ONLY | SPY 1 SHARE"
+    else "STAGE A DISABLED: USE SPY 1-MINUTE TIME CHART",
+    if stageAChartOK then Color.CYAN else Color.RED);
+AddLabel(yes, "OPTION P/L NOT IMPLEMENTED", Color.YELLOW);
+
+def bn = BarNumber();
+def dayNumber = GetYYYYMMDD();
+
+def newDay =
+    bn == 1 or
+    dayNumber != dayNumber[1];
+
+def inSession =
+    stageAChartOK and
+    SecondsFromTime(0930) >= 0 and
+    SecondsTillTime(1600) > 0;
+
+def minutesFromOpen =
+    Floor(SecondsFromTime(0930) / 60);
+
+def fiveMinuteBoundary =
+    inSession and
+    minutesFromOpen >= 10 and
+    minutesFromOpen % 5 == 0;
+
+# ============================================================
+# COMPLETED FIVE-MINUTE CANDLES
+# ============================================================
+
+def firstOpen = open[10];
+def firstClose = close[6];
+
+def secondOpen = open[5];
+def secondClose = close[1];
+
+def validPair =
+    fiveMinuteBoundary and
+    dayNumber == dayNumber[10];
+
+def demandPattern =
+    validPair and
+    firstClose < firstOpen and
+    secondClose > secondOpen and
+    AbsValue(firstClose - secondOpen)
+        <= meetingTolerance;
+
+def supplyPattern =
+    validPair and
+    firstClose > firstOpen and
+    secondClose < secondOpen and
+    AbsValue(firstClose - secondOpen)
+        <= meetingTolerance;
+
+def demandCandidate =
+    Min(firstClose, secondOpen);
+
+def supplyCandidate =
+    Max(firstClose, secondOpen);
+
+# ============================================================
+# MAJOR DEMAND AND SUPPLY LEVELS
+# ============================================================
+
+def majorDemand = CompoundValue(
+    1,
+    if newDay then 0
+    else if demandPattern then
+        if majorDemand[1] == 0
+        then demandCandidate
+        else Min(majorDemand[1], demandCandidate)
+    else majorDemand[1],
+    0
+);
+
+def majorSupply = CompoundValue(
+    1,
+    if newDay then 0
+    else if supplyPattern then
+        if majorSupply[1] == 0
+        then supplyCandidate
+        else Max(majorSupply[1], supplyCandidate)
+    else majorSupply[1],
+    0
+);
+
+def demandBottom = majorDemand;
+def demandTop = majorDemand + zoneSize;
+
+def supplyTop = majorSupply;
+def supplyBottom = majorSupply - zoneSize;
+
+# ============================================================
+# ZONE DISPLAY
+# ============================================================
+
+plot DemandZoneTop =
+    if showZones and inSession and majorDemand > 0
+    then demandTop
+    else Double.NaN;
+
+plot DemandZoneBottom =
+    if showZones and inSession and majorDemand > 0
+    then demandBottom
+    else Double.NaN;
+
+plot SupplyZoneTop =
+    if showZones and inSession and majorSupply > 0
+    then supplyTop
+    else Double.NaN;
+
+plot SupplyZoneBottom =
+    if showZones and inSession and majorSupply > 0
+    then supplyBottom
+    else Double.NaN;
+
+DemandZoneTop.SetDefaultColor(Color.GREEN);
+DemandZoneBottom.SetDefaultColor(Color.GREEN);
+SupplyZoneTop.SetDefaultColor(Color.RED);
+SupplyZoneBottom.SetDefaultColor(Color.RED);
+
+DemandZoneTop.SetLineWeight(1);
+DemandZoneBottom.SetLineWeight(1);
+SupplyZoneTop.SetLineWeight(1);
+SupplyZoneBottom.SetLineWeight(1);
+
+AddCloud(
+    DemandZoneTop,
+    DemandZoneBottom,
+    Color.DARK_GREEN,
+    Color.DARK_GREEN
+);
+
+AddCloud(
+    SupplyZoneTop,
+    SupplyZoneBottom,
+    Color.DARK_RED,
+    Color.DARK_RED
+);
+
+# ============================================================
+# Z CANDLE CONDITIONS
+# ============================================================
+
+def rawLongZ =
+    inSession and
+    majorDemand > 0 and
+    close < open and
+    open > demandTop and
+    low <= demandTop;
+
+def rawShortZ =
+    inSession and
+    majorSupply > 0 and
+    close > open and
+    open < supplyBottom and
+    high >= supplyBottom;
+
+# ============================================================
+# ZRCE STATE MACHINE
+# ============================================================
+
+def state = CompoundValue(
+    1,
+
+    if newDay or !inSession then 0
+
+    else if state[1] >= 10 then
+        if state[1] == 10
+        then 0
+        else state[1] - 1
+
+    else if state[1] == 1 then
+        if close > open
+        then 2
+        else 10 + cooldownMinutes
+
+    else if state[1] == 2 then
+        if close > open and
+           close > close[1] and
+           close > demandTop[2]
+        then 3
+        else 10 + cooldownMinutes
+
+    else if state[1] == 3 then 0
+
+    else if state[1] == -1 then
+        if close < open
+        then -2
+        else 10 + cooldownMinutes
+
+    else if state[1] == -2 then
+        if close < open and
+           close < close[1] and
+           close < supplyBottom[2]
+        then -3
+        else 10 + cooldownMinutes
+
+    else if state[1] == -3 then 0
+
+    else if rawLongZ then 1
+    else if rawShortZ then -1
+
+    else 0,
+
+    0
+);
+
+# ============================================================
+# Z / R / C / E FLAGS
+# ============================================================
+
+def longZ =
+    state == 1 and state[1] == 0;
+
+def shortZ =
+    state == -1 and state[1] == 0;
+
+def longR =
+    state == 2 and state[1] == 1;
+
+def shortR =
+    state == -2 and state[1] == -1;
+
+def longC =
+    state == 3 and state[1] == 2;
+
+def shortC =
+    state == -3 and state[1] == -2;
+
+def longE =
+    inSession and state[1] == 3;
+
+def shortE =
+    inSession and state[1] == -3;
+
+# ============================================================
+# ENTRY DIRECTION
+# ============================================================
+
+def entryActive =
+    longE or shortE;
+
+def confirmationClose =
+    if entryActive
+    then close[1]
+    else Double.NaN;
+
+def entryOpen =
+    if entryActive
+    then open
+    else Double.NaN;
+
+def entryDifference =
+    if entryActive
+    then entryOpen - confirmationClose
+    else Double.NaN;
+
+def longDirectionOK =
+    longE and open >= close[1];
+
+def shortDirectionOK =
+    shortE and open <= close[1];
+
+def directionOK =
+    longDirectionOK or shortDirectionOK;
+
+def cooldownRemaining =
+    if state >= 10
+    then state - 10
+    else 0;
+
+# ============================================================
+# ZRCE SIGNAL BUBBLES
+# ============================================================
+
+AddChartBubble(
+    showZ and longZ,
+    low,
+    "Z",
+    Color.GREEN,
+    no
+);
+
+AddChartBubble(
+    showR and longR,
+    low,
+    "R",
+    Color.GREEN,
+    no
+);
+
+AddChartBubble(
+    showC and longC,
+    low,
+    "C",
+    Color.GREEN,
+    no
+);
+
+AddChartBubble(
+    showE and longDirectionOK,
+    open,
+    "E LONG",
+    Color.CYAN,
+    no
+);
+
+AddChartBubble(
+    showZ and shortZ,
+    high,
+    "Z",
+    Color.RED,
+    yes
+);
+
+AddChartBubble(
+    showR and shortR,
+    high,
+    "R",
+    Color.RED,
+    yes
+);
+
+AddChartBubble(
+    showC and shortC,
+    high,
+    "C",
+    Color.RED,
+    yes
+);
+
+AddChartBubble(
+    showE and shortDirectionOK,
+    open,
+    "E SHORT",
+    Color.MAGENTA,
+    yes
+);
+
+# ============================================================
+# ENTRY ARROWS
+# ============================================================
+
+plot LongEntry =
+    if showE and longDirectionOK
+    then open
+    else Double.NaN;
+
+LongEntry.SetPaintingStrategy(
+    PaintingStrategy.ARROW_UP
+);
+LongEntry.SetDefaultColor(Color.CYAN);
+LongEntry.SetLineWeight(3);
+
+plot ShortEntry =
+    if showE and shortDirectionOK
+    then open
+    else Double.NaN;
+
+ShortEntry.SetPaintingStrategy(
+    PaintingStrategy.ARROW_DOWN
+);
+ShortEntry.SetDefaultColor(Color.MAGENTA);
+ShortEntry.SetLineWeight(3);
+
+# ============================================================
+# FIVE-MINUTE PROFIT TARGETS
+# ============================================================
+
+def ptFiveOpen = open[5];
+def ptFiveClose = close[1];
+
+def ptFiveLow = Lowest(low[1], 5);
+def ptFiveHigh = Highest(high[1], 5);
+
+def ptComplete =
+    fiveMinuteBoundary and
+    dayNumber == dayNumber[5];
+
+def ptDemandNew =
+    ptComplete and
+    demandPattern and
+    (
+        majorDemand[1] == 0 or
+        demandCandidate < majorDemand[1]
+    );
+
+def ptSupplyNew =
+    ptComplete and
+    supplyPattern and
+    (
+        majorSupply[1] == 0 or
+        supplyCandidate > majorSupply[1]
+    );
+
+def ptDemandTouch =
+    ptComplete and
+    !ptDemandNew and
+    majorDemand[1] > 0 and
+    ptFiveClose < ptFiveOpen and
+    ptFiveLow <= majorDemand[1] + zoneSize and
+    ptFiveHigh >= majorDemand[1];
+
+def ptSupplyTouch =
+    ptComplete and
+    !ptSupplyNew and
+    majorSupply[1] > 0 and
+    ptFiveClose > ptFiveOpen and
+    ptFiveHigh >= majorSupply[1] - zoneSize and
+    ptFiveLow <= majorSupply[1];
+
+# ============================================================
+# TARGET PHASES
+# ============================================================
+
+def ptDemandPhase = CompoundValue(
+    1,
+
+    if newDay then 0
+    else if ptDemandNew then 2
+    else if ptDemandTouch then 1
+    else if !ptComplete then ptDemandPhase[1]
+
+    else if
+        (ptDemandPhase[1] == 1 or
+         ptDemandPhase[1] == 2) and
+        ptFiveClose > ptFiveOpen
+    then 2
+
+    else 0,
+
+    0
+);
+
+def ptSupplyPhase = CompoundValue(
+    1,
+
+    if newDay then 0
+    else if ptSupplyNew then 2
+    else if ptSupplyTouch then 1
+    else if !ptComplete then ptSupplyPhase[1]
+
+    else if
+        (ptSupplyPhase[1] == 1 or
+         ptSupplyPhase[1] == 2) and
+        ptFiveClose < ptFiveOpen
+    then 2
+
+    else 0,
+
+    0
+);
+
+def ptDemandGreen =
+    ptComplete and
+    !ptDemandNew and
+    !ptDemandTouch and
+    (
+        ptDemandPhase[1] == 1 or
+        ptDemandPhase[1] == 2
+    ) and
+    ptFiveClose > ptFiveOpen;
+
+def ptSupplyRed =
+    ptComplete and
+    !ptSupplyNew and
+    !ptSupplyTouch and
+    (
+        ptSupplyPhase[1] == 1 or
+        ptSupplyPhase[1] == 2
+    ) and
+    ptFiveClose < ptFiveOpen;
+
+# ============================================================
+# TARGET RUN CLOSES
+# ============================================================
+
+def ptDemandRunClose = CompoundValue(
+    1,
+
+    if newDay then Double.NaN
+    else if ptDemandNew then ptFiveClose
+    else if ptDemandTouch then Double.NaN
+    else if ptDemandGreen then ptFiveClose
+    else ptDemandRunClose[1],
+
+    Double.NaN
+);
+
+def ptSupplyRunClose = CompoundValue(
+    1,
+
+    if newDay then Double.NaN
+    else if ptSupplyNew then ptFiveClose
+    else if ptSupplyTouch then Double.NaN
+    else if ptSupplyRed then ptFiveClose
+    else ptSupplyRunClose[1],
+
+    Double.NaN
+);
+
+# ============================================================
+# COMPLETED TARGETS
+# ============================================================
+
+def ptDemandCompleted =
+    ptComplete and
+    !ptDemandNew and
+    !ptDemandTouch and
+    ptDemandPhase[1] == 2 and
+    ptFiveClose <= ptFiveOpen;
+
+def ptSupplyCompleted =
+    ptComplete and
+    !ptSupplyNew and
+    !ptSupplyTouch and
+    ptSupplyPhase[1] == 2 and
+    ptFiveClose >= ptFiveOpen;
+
+def ptLastDemandTarget = CompoundValue(
+    1,
+
+    if newDay or ptDemandNew
+    then Double.NaN
+
+    else if ptDemandCompleted
+    then ptDemandRunClose[1]
+
+    else ptLastDemandTarget[1],
+
+    Double.NaN
+);
+
+def ptLastSupplyTarget = CompoundValue(
+    1,
+
+    if newDay or ptSupplyNew
+    then Double.NaN
+
+    else if ptSupplyCompleted
+    then ptSupplyRunClose[1]
+
+    else ptLastSupplyTarget[1],
+
+    Double.NaN
+);
+
+# ============================================================
+# TARGET DIAGNOSTIC BUBBLES
+# ============================================================
+
+AddChartBubble(
+    showTPDiagnostics and ptDemandNew,
+    ptFiveLow,
+    "MDZ CREATED",
+    Color.YELLOW,
+    no
+);
+
+AddChartBubble(
+    showTPDiagnostics and ptSupplyNew,
+    ptFiveHigh,
+    "MSZ CREATED",
+    Color.YELLOW,
+    yes
+);
+
+AddChartBubble(
+    showTPDiagnostics and ptDemandTouch,
+    ptFiveLow,
+    "MDZ RETEST",
+    Color.YELLOW,
+    no
+);
+
+AddChartBubble(
+    showTPDiagnostics and ptSupplyTouch,
+    ptFiveHigh,
+    "MSZ RETEST",
+    Color.YELLOW,
+    yes
+);
+
+AddChartBubble(
+    showTPDiagnostics and ptDemandGreen,
+    ptFiveClose,
+    "GREEN 5m " +
+        AsText(Round(ptFiveClose, 2)),
+    Color.GREEN,
+    yes
+);
+
+AddChartBubble(
+    showTPDiagnostics and ptSupplyRed,
+    ptFiveClose,
+    "RED 5m " +
+        AsText(Round(ptFiveClose, 2)),
+    Color.RED,
+    no
+);
+
+AddChartBubble(
+    showTPDiagnostics and ptDemandCompleted,
+    ptDemandRunClose[1],
+    "CALL TP UPDATED " +
+        AsText(Round(ptDemandRunClose[1], 2)),
+    Color.CYAN,
+    yes
+);
+
+AddChartBubble(
+    showTPDiagnostics and ptSupplyCompleted,
+    ptSupplyRunClose[1],
+    "PUT TP UPDATED " +
+        AsText(Round(ptSupplyRunClose[1], 2)),
+    Color.MAGENTA,
+    no
+);
+
+# ============================================================
+# TARGET AT ENTRY
+# ============================================================
+
+def ptCallAtEntry =
+    if longDirectionOK
+    then ptLastDemandTarget
+    else Double.NaN;
+
+def ptPutAtEntry =
+    if shortDirectionOK
+    then ptLastSupplyTarget
+    else Double.NaN;
+
+AddChartBubble(
+    showProfitTargets and longDirectionOK,
+    low,
+
+    if IsNaN(ptCallAtEntry)
+    then "CALL TP: N/A"
+    else "CALL TP: " +
+        AsText(Round(ptCallAtEntry, 2)),
+
+    Color.CYAN,
+    no
+);
+
+AddChartBubble(
+    showProfitTargets and shortDirectionOK,
+    high,
+
+    if IsNaN(ptPutAtEntry)
+    then "PUT TP: N/A"
+    else "PUT TP: " +
+        AsText(Round(ptPutAtEntry, 2)),
+
+    Color.MAGENTA,
+    yes
+);
+
+plot CallProfitTarget =
+    if showProfitTargets and longDirectionOK
+    then ptCallAtEntry
+    else Double.NaN;
+
+CallProfitTarget.SetPaintingStrategy(
+    PaintingStrategy.POINTS
+);
+CallProfitTarget.SetDefaultColor(Color.CYAN);
+CallProfitTarget.SetLineWeight(4);
+
+plot PutProfitTarget =
+    if showProfitTargets and shortDirectionOK
+    then ptPutAtEntry
+    else Double.NaN;
+
+PutProfitTarget.SetPaintingStrategy(
+    PaintingStrategy.POINTS
+);
+PutProfitTarget.SetDefaultColor(Color.MAGENTA);
+PutProfitTarget.SetLineWeight(4);
+
+# ============================================================
+# ZRCE STATUS
+# ============================================================
+
+AddLabel(
+    showStatus,
+    "ZRCE STAGE A STRATEGY v1.4",
+    Color.WHITE
+);
+
+AddLabel(
+    showStatus,
+
+    if cooldownRemaining > 0
+    then "COOLDOWN: " + cooldownRemaining
+
+    else if state == 1 or state == -1
+    then "WAITING FOR R"
+
+    else if state == 2 or state == -2
+    then "WAITING FOR C"
+
+    else if state == 3 or state == -3
+    then "ENTRY NEXT BAR"
+
+    else "READY",
+
+    if cooldownRemaining > 0
+    then Color.YELLOW
+    else Color.GREEN
+);
+
+AddLabel(
+    showStatus,
+
+    if majorDemand > 0
+    then "MDZ: $" +
+        AsText(Round(majorDemand, 2))
+    else "MDZ: NOT FOUND",
+
+    Color.GREEN
+);
+
+AddLabel(
+    showStatus,
+
+    if majorSupply > 0
+    then "MSZ: $" +
+        AsText(Round(majorSupply, 2))
+    else "MSZ: NOT FOUND",
+
+    Color.RED
+);
+
+AddLabel(
+    showEntryDiagnostic,
+
+    if longE then "E: LONG"
+    else if shortE then "E: SHORT"
+    else "E: INACTIVE",
+
+    if entryActive
+    then Color.CYAN
+    else Color.GRAY
+);
+
+AddLabel(
+    showEntryDiagnostic and entryActive,
+    "C CLOSE: $" +
+        AsText(Round(confirmationClose, 2)),
+    Color.WHITE
+);
+
+AddLabel(
+    showEntryDiagnostic and entryActive,
+    "E OPEN: $" +
+        AsText(Round(entryOpen, 2)),
+    Color.WHITE
+);
+
+AddLabel(
+    showEntryDiagnostic and entryActive,
+    "E OPEN - C CLOSE: $" +
+        AsText(Round(entryDifference, 2)),
+    if directionOK
+    then Color.GREEN
+    else Color.RED
+);
+
+AddLabel(
+    showEntryDiagnostic and entryActive,
+    if directionOK
+    then "DIRECTION: PASS"
+    else "DIRECTION: FAIL",
+    if directionOK
+    then Color.GREEN
+    else Color.RED
+);
+
+# ============================================================
+# VERSION 3.3 MOCK TRADE SIMULATOR
+#
+# TRADE RECORD CONTAINS STOP AND TARGET ONLY.
+#
+# STOP CENTS * 100000 + TARGET CENTS
+#
+# POSITIVE RECORD = LONG
+# NEGATIVE RECORD = SHORT
+# ZERO = FLAT
+#
+# EACH COMPONENT IS AN INTEGER BELOW 100000.
+# THE FULL RECORD IS BELOW 10 BILLION,
+# WELL WITHIN EXACT INTEGER PRECISION.
+#
+# ENTRY PRICE IS LOCKED IN A SEPARATE
+# REGISTER AFTER THE TRADE OPENS.
+# ============================================================
+
+# ============================================================
+# STOP CANDIDATES
+# ============================================================
+
+def simLongStopCandidate =
+    Lowest(low[1], 3);
+
+def simShortStopCandidate =
+    Highest(high[1], 3);
+
+# ============================================================
+# SAFE CENT VALUES
+# ============================================================
+
+def simOpenCents =
+    if IsNaN(open)
+    then 0
+    else Round(open * 100, 0);
+
+def simLongStopCents =
+    if IsNaN(simLongStopCandidate)
+    then 0
+    else Round(simLongStopCandidate * 100, 0);
+
+def simShortStopCents =
+    if IsNaN(simShortStopCandidate)
+    then 0
+    else Round(simShortStopCandidate * 100, 0);
+
+def simLongTargetCents =
+    if IsNaN(ptLastDemandTarget)
+    then 0
+    else Round(ptLastDemandTarget * 100, 0);
+
+def simShortTargetCents =
+    if IsNaN(ptLastSupplyTarget)
+    then 0
+    else Round(ptLastSupplyTarget * 100, 0);
+
+# ============================================================
+# STRATEGY ENTRY VALIDATION
+# All entry eligibility rules live together in this section.
+# Risk/reward distances are positive integer cents.
+# ============================================================
+
+def simLongTargetValid =
+    simLongTargetCents > simOpenCents;
+
+def simShortTargetValid =
+    simShortTargetCents > 0 and
+    simShortTargetCents < simOpenCents;
+
+def simLongStopValid =
+    simLongStopCents > 0 and
+    simLongStopCents < simOpenCents;
+
+def simShortStopValid =
+    simShortStopCents > simOpenCents;
+
+def simLongPricesValid =
+    simOpenCents > 0 and
+    simOpenCents < 100000 and
+    simLongStopCents > 0 and
+    simLongStopCents < 100000 and
+    simLongTargetCents > 0 and
+    simLongTargetCents < 100000;
+def simShortPricesValid =
+    simOpenCents > 0 and
+    simOpenCents < 100000 and
+    simShortStopCents > 0 and
+    simShortStopCents < 100000 and
+    simShortTargetCents > 0 and
+    simShortTargetCents < 100000;
+
+# NEW RULE: minimum reward/risk = 1.0 (equal is allowed).
+# Calculate only from the same rounded-cent prices used by
+# the simulator's entry record, to avoid float rounding drift.
+def simLongPotentialProfitCents =
+    AbsValue(simLongTargetCents - simOpenCents);
+def simLongPotentialLossCents =
+    AbsValue(simOpenCents - simLongStopCents);
+def simShortPotentialProfitCents =
+    AbsValue(simOpenCents - simShortTargetCents);
+def simShortPotentialLossCents =
+    AbsValue(simShortStopCents - simOpenCents);
+
+def simLongRewardRiskOK =
+    simLongPotentialProfitCents >= simLongPotentialLossCents;
+def simShortRewardRiskOK =
+    simShortPotentialProfitCents >= simShortPotentialLossCents;
+
+# Consolidated entry gates. Future strategy rules belong here.
+def simLongCandidate =
+    longDirectionOK and
+    simLongTargetValid and
+    simLongStopValid and
+    simLongPricesValid and
+    simLongRewardRiskOK;
+
+def simShortCandidate =
+    shortDirectionOK and
+    simShortTargetValid and
+    simShortStopValid and
+    simShortPricesValid and
+    simShortRewardRiskOK;
+
+def simClosingBar =
+    SecondsFromTime(1559) >= 0 and
+    SecondsTillTime(1600) > 0;
+
+# ============================================================
+# PACK ONLY STOP AND TARGET
+# ============================================================
+
+def simNewLongRecord =
+    simLongStopCents * 100000 +
+    simLongTargetCents;
+
+def simNewShortRecord =
+    simShortStopCents * 100000 +
+    simShortTargetCents;
+
+# ============================================================
+# SINGLE RECURSIVE POSITION RECORD
+#
+# NO FORWARD REFERENCES.
+# PREVIOUS RECORD CONTAINS THE LOCKED
+# STOP AND TARGET.
+# ============================================================
+
+def simRecord = CompoundValue(
+    1,
+
+    if newDay then 0
+
+    else if IsNaN(simRecord[1]) then 0
+
+    else if simRecord[1] > 0 then
+
+        if
+            low <=
+                Floor(
+                    simRecord[1] / 100000
+                ) / 100
+
+            or high >=
+                (
+                    AbsValue(simRecord[1]) -
+                    Floor(
+                        AbsValue(simRecord[1]) /
+                        100000
+                    ) * 100000
+                ) / 100
+
+            or simClosingBar
+            or !inSession
+
+        then 0
+        else simRecord[1]
+
+    else if simRecord[1] < 0 then
+
+        if
+            high >=
+                Floor(
+                    AbsValue(simRecord[1]) /
+                    100000
+                ) / 100
+
+            or low <=
+                (
+                    AbsValue(simRecord[1]) -
+                    Floor(
+                        AbsValue(simRecord[1]) /
+                        100000
+                    ) * 100000
+                ) / 100
+
+            or simClosingBar
+            or !inSession
+
+        then 0
+        else simRecord[1]
+
+    else if simLongCandidate and
+            inSession and
+            !simClosingBar
+    then if low <= simLongStopCents / 100 or high >= simLongTargetCents / 100 then 0 else simNewLongRecord
+
+    else if simShortCandidate and
+            inSession and
+            !simClosingBar
+    then if high >= simShortStopCents / 100 or low <= simShortTargetCents / 100 then 0 else -simNewShortRecord
+
+    else 0,
+
+    0
+);
+
+# ============================================================
+# POSITION AND TRANSITIONS
+# ============================================================
+
+def simPriorRecord =
+    if bn <= 1 or IsNaN(simRecord[1])
+    then 0
+    else simRecord[1];
+
+def simPosition =
+    if simRecord > 0 then 1
+    else if simRecord < 0 then -1
+    else 0;
+
+def simPriorPosition =
+    if simPriorRecord > 0 then 1
+    else if simPriorRecord < 0 then -1
+    else 0;
+
+def simBuy = !newDay and simPriorPosition == 0 and
+    simLongCandidate and inSession and !simClosingBar;
+def simSell = !newDay and simPriorPosition == 0 and !simBuy and
+    simShortCandidate and inSession and !simClosingBar;
+def simEntryBarExit = (simBuy or simSell) and simPosition == 0;
+def simExit = !newDay and
+    ((simPriorPosition != 0 and simPosition == 0) or simEntryBarExit);
+def simExitDirection =
+    if simBuy then 1 else if simSell then -1 else simPriorPosition;
+# ============================================================
+# LOCKED ENTRY PRICE
+#
+# THIS REGISTER IS DECLARED AFTER simRecord
+# SO IT CANNOT CAUSE A FORWARD REFERENCE.
+# ============================================================
+
+def simEntryRegister = CompoundValue(
+    1,
+
+    if newDay then 0
+
+    else if simBuy or simSell
+    then open
+
+    else if IsNaN(simEntryRegister[1])
+    then 0
+
+    else simEntryRegister[1],
+
+    0
+);
+
+# ============================================================
+# DECODE CURRENT STOP AND TARGET
+# ============================================================
+
+def simPacked =
+    if simBuy then simNewLongRecord else if simSell then simNewShortRecord else AbsValue(simRecord);
+
+def simStopCents =
+    Floor(simPacked / 100000);
+
+def simTargetCents =
+    simPacked -
+    simStopCents * 100000;
+
+def simStop =
+    simStopCents / 100;
+
+def simTarget =
+    simTargetCents / 100;
+
+def simEntry =
+    simEntryRegister;
+
+# ============================================================
+# DECODE PREVIOUS STOP AND TARGET
+# ============================================================
+
+def simPriorPacked =
+    AbsValue(simPriorRecord);
+
+def simPriorStopCents =
+    Floor(simPriorPacked / 100000);
+
+def simPriorTargetCents =
+    simPriorPacked -
+    simPriorStopCents * 100000;
+
+def simPriorStop =
+    simPriorStopCents / 100;
+
+def simPriorTarget =
+    simPriorTargetCents / 100;
+
+def simPriorEntry =
+    if bn <= 1 or IsNaN(simEntryRegister[1])
+    then 0
+    else simEntryRegister[1];
+
+# ============================================================
+# EXIT CLASSIFICATION
+#
+# STOP HAS PRIORITY IF BOTH ARE HIT.
+# ============================================================
+
+# Effective levels include same-bar entries that finish flat.
+def simEventStop = if simBuy or simSell then simStop else simPriorStop;
+def simEventTarget = if simBuy or simSell then simTarget else simPriorTarget;
+def simEventEntry = if simBuy or simSell then simEntry else simPriorEntry;
+
+# Resolve an opening gap BEFORE examining intrabar ranges.
+def simGapStop = simExit and !simEntryBarExit and inSession and
+    ((simExitDirection == 1 and open <= simEventStop) or
+     (simExitDirection == -1 and open >= simEventStop));
+def simGapTarget = simExit and !simEntryBarExit and inSession and !simGapStop and
+    ((simExitDirection == 1 and open >= simEventTarget) or
+     (simExitDirection == -1 and open <= simEventTarget));
+def simRangeStop =
+    (simExitDirection == 1 and low <= simEventStop) or
+    (simExitDirection == -1 and high >= simEventStop);
+def simRangeTarget =
+    (simExitDirection == 1 and high >= simEventTarget) or
+    (simExitDirection == -1 and low <= simEventTarget);
+def simAmbiguousBar = simExit and inSession and !simGapStop and
+    !simGapTarget and simRangeStop and simRangeTarget;
+def simStopHit = simExit and inSession and
+    (simGapStop or (!simGapTarget and simRangeStop));
+def simTargetHit = simExit and inSession and !simStopHit and
+    (simGapTarget or simRangeTarget);
+def simExitPrice =
+    if !simExit then 0
+    else if simGapStop then open
+    else if simStopHit then simEventStop
+    else if simTargetHit then simEventTarget
+    else if simClosingBar then close
+    else if !inSession then close[1]
+    else close;
+def simTradePL =
+    if !simExit then 0
+    else if simExitDirection == 1 then simExitPrice - simEventEntry
+    else if simExitDirection == -1 then simEventEntry - simExitPrice
+    else 0;
+def simSafeTradePL =
+    if IsNaN(simTradePL)
+    then 0
+    else simTradePL;
+
+# ============================================================
+# DAILY STATISTICS
+# ============================================================
+
+def simDailyPL = CompoundValue(
+    1,
+
+    if newDay then 0
+
+    else
+        (
+            if IsNaN(simDailyPL[1])
+            then 0
+            else simDailyPL[1]
+        ) + simSafeTradePL,
+
+    0
+);
+
+def simDailyTrades = CompoundValue(
+    1,
+
+    if newDay then 0
+
+    else
+        (
+            if IsNaN(simDailyTrades[1])
+            then 0
+            else simDailyTrades[1]
+        ) +
+        (if simExit then 1 else 0),
+
+    0
+);
+
+def simDailyWins = CompoundValue(
+    1,
+
+    if newDay then 0
+
+    else
+        (
+            if IsNaN(simDailyWins[1])
+            then 0
+            else simDailyWins[1]
+        ) +
+        (
+            if simExit and simSafeTradePL > 0
+            then 1
+            else 0
+        ),
+
+    0
+);
+
+def simDailyLosses = CompoundValue(
+    1,
+
+    if newDay then 0
+
+    else
+        (
+            if IsNaN(simDailyLosses[1])
+            then 0
+            else simDailyLosses[1]
+        ) +
+        (
+            if simExit and simSafeTradePL < 0
+            then 1
+            else 0
+        ),
+
+    0
+);
+
+# ============================================================
+# ENTRY REJECTION DIAGNOSTICS
+# ============================================================
+
+def simRejectedDirection =
+    entryActive and
+    !directionOK;
+
+def simRejectedTarget =
+    directionOK and
+    (
+        (
+            longDirectionOK and
+            !simLongTargetValid
+        )
+        or
+        (
+            shortDirectionOK and
+            !simShortTargetValid
+        )
+    );
+
+def simRejectedStop =
+    directionOK and
+    !simRejectedTarget and
+    (
+        (
+            longDirectionOK and
+            !simLongStopValid
+        )
+        or
+        (
+            shortDirectionOK and
+            !simShortStopValid
+        )
+    );
+
+def simRejectedPriceRange =
+    directionOK and
+    !simRejectedTarget and
+    !simRejectedStop and
+    (
+        (
+            longDirectionOK and
+            !simLongPricesValid
+        )
+        or
+        (
+            shortDirectionOK and
+            !simShortPricesValid
+        )
+    );
+
+def simRejectedRewardRisk =
+    directionOK and
+    !simRejectedTarget and
+    !simRejectedStop and
+    !simRejectedPriceRange and
+    ((longDirectionOK and !simLongRewardRiskOK) or
+     (shortDirectionOK and !simShortRewardRiskOK));
+
+def simRejectedBusy =
+    directionOK and
+    !simRejectedTarget and
+    !simRejectedStop and
+    !simRejectedPriceRange and
+    !simRejectedRewardRisk and
+    simPriorPosition != 0;
+
+def simRejectedSession =
+    directionOK and
+    !simRejectedTarget and
+    !simRejectedStop and
+    !simRejectedPriceRange and
+    !simRejectedRewardRisk and
+    !simRejectedBusy and
+    simClosingBar;
+
+def simUnexpectedNoEntry =
+    directionOK and
+    !simRejectedTarget and
+    !simRejectedStop and
+    !simRejectedPriceRange and
+    !simRejectedRewardRisk and
+    !simRejectedBusy and
+    !simRejectedSession and
+    !simBuy and
+    !simSell;
+
+# ============================================================
+# HISTORICAL ENTRY DIAGNOSTICS
+# ============================================================
+
+AddChartBubble(
+    showHistoricalDiagnostics and entryActive,
+
+    if longE then low else high,
+
+    if simBuy then
+        "SIM ACCEPT LONG"
+
+    else if simSell then
+        "SIM ACCEPT SHORT"
+
+    else if simRejectedDirection then
+        "SIM REJECT: DIRECTION"
+
+    else if simRejectedTarget then
+        "SIM REJECT: TARGET"
+
+    else if simRejectedStop then
+        "SIM REJECT: STOP"
+
+    else if simRejectedPriceRange then
+        "SIM REJECT: PRICE RANGE"
+
+    else if simRejectedRewardRisk then
+        "SIM REJECT: RISK/REWARD"
+
+    else if simRejectedBusy then
+        "SIM REJECT: ALREADY IN TRADE"
+
+    else if simRejectedSession then
+        "SIM REJECT: SESSION CLOSE"
+
+    else if simUnexpectedNoEntry then
+        "SIM ERROR: NO ENTRY"
+
+    else "SIM: CHECK ENTRY",
+
+    if simBuy or simSell
+    then Color.GREEN
+    else Color.YELLOW,
+
+    shortE
+);
+
+# ============================================================
+# ENTRY PRICE CHECKS
+# ============================================================
+
+AddChartBubble(
+    showHistoricalDiagnostics and
+    longDirectionOK,
+
+    low - TickSize() * 8,
+
+    "LONG CHECK" +
+    "\nOPEN $" +
+        AsText(Round(open, 2)) +
+    "\nSTOP $" +
+        AsText(Round(simLongStopCandidate, 2)) +
+    "\nTARGET " +
+        (
+            if IsNaN(ptLastDemandTarget)
+            then "N/A"
+            else "$" +
+                AsText(Round(ptLastDemandTarget, 2))
+        ),
+
+    Color.CYAN,
+    no
+);
+
+AddChartBubble(
+    showHistoricalDiagnostics and
+    shortDirectionOK,
+
+    high + TickSize() * 8,
+
+    "SHORT CHECK" +
+    "\nOPEN $" +
+        AsText(Round(open, 2)) +
+    "\nSTOP $" +
+        AsText(Round(simShortStopCandidate, 2)) +
+    "\nTARGET " +
+        (
+            if IsNaN(ptLastSupplyTarget)
+            then "N/A"
+            else "$" +
+                AsText(Round(ptLastSupplyTarget, 2))
+        ),
+
+    Color.MAGENTA,
+    yes
+);
+
+# ============================================================
+# MOCK ENTRY BUBBLES
+# ============================================================
+
+AddChartBubble(
+    showMockTrades and simBuy,
+
+    low,
+
+    "SIM BUY 1 @ $" +
+        AsText(Round(simEntry, 2)) +
+
+    "\nSTOP $" +
+        AsText(Round(simStop, 2)) +
+
+    "\nTARGET $" +
+        AsText(Round(simTarget, 2)),
+
+    Color.CYAN,
+    no
+);
+
+AddChartBubble(
+    showMockTrades and simSell,
+
+    high,
+
+    "SIM SHORT 1 @ $" +
+        AsText(Round(simEntry, 2)) +
+
+    "\nSTOP $" +
+        AsText(Round(simStop, 2)) +
+
+    "\nTARGET $" +
+        AsText(Round(simTarget, 2)),
+
+    Color.MAGENTA,
+    yes
+);
+
+# ============================================================
+# MOCK EXIT BUBBLE
+# ============================================================
+
+AddChartBubble(
+    showMockTrades and simExit,
+
+    simExitPrice,
+
+    (
+        if simStopHit then "SIM STOP"
+        else if simTargetHit then "SIM TARGET"
+        else "SIM SESSION EXIT"
+    ) +
+
+    "\nEXIT $" +
+        AsText(Round(simExitPrice, 2)) +
+
+    "\nP/L $" +
+        AsText(Round(simSafeTradePL, 2)),
+
+    if simSafeTradePL >= 0
+    then Color.GREEN
+    else Color.RED,
+
+    simExitDirection < 0
+);
+
+# ============================================================
+# SIMULATOR DIAGNOSTIC LABEL
+# ============================================================
+
+AddLabel(
+    showSimDiagnostics,
+
+    if simPosition == 1
+    then "SIM DIAG: LONG ACTIVE"
+
+    else if simPosition == -1
+    then "SIM DIAG: SHORT ACTIVE"
+
+    else if simRejectedTarget
+    then "SIM DIAG: TARGET REJECT"
+
+    else if simRejectedStop
+    then "SIM DIAG: STOP REJECT"
+
+    else if simRejectedPriceRange
+    then "SIM DIAG: PRICE RANGE"
+
+    else if simRejectedRewardRisk
+    then "SIM DIAG: RISK/REWARD REJECT"
+
+    else if simRejectedBusy
+    then "SIM DIAG: ALREADY IN TRADE"
+
+    else if simUnexpectedNoEntry
+    then "SIM DIAG: NO ENTRY ERROR"
+
+    else "SIM DIAG: WAITING",
+
+    if simPosition != 0
+    then Color.CYAN
+    else Color.GRAY
+);
+
+# ============================================================
+# DAILY MOCK STATISTICS
+# ============================================================
+
+AddLabel(
+    showMockStats,
+
+    "MOCK 1 SHARE" +
+    " | TRADES " + simDailyTrades +
+    " | W " + simDailyWins +
+    " | L " + simDailyLosses +
+    " | REALIZED P/L $" +
+        AsText(Round(simDailyPL, 2)),
+
+    if simDailyPL >= 0
+    then Color.GREEN
+    else Color.RED
+);
+
+# ============================================================
+# POSITION STATUS
+# ============================================================
+
+AddLabel(
+    showMockStats,
+
+    if simPosition == 1
+    then "SIM STATUS: LONG"
+
+    else if simPosition == -1
+    then "SIM STATUS: SHORT"
+
+    else "SIM STATUS: FLAT",
+
+    Color.GRAY
+);
+
+# ============================================================
+# OPEN TRADE DETAILS
+# ============================================================
+
+AddLabel(
+    showMockStats and simPosition != 0,
+
+    "MOCK OPEN @ $" +
+        AsText(Round(simEntry, 2)) +
+
+    " | STOP $" +
+        AsText(Round(simStop, 2)) +
+
+    " | TARGET $" +
+        AsText(Round(simTarget, 2)),
+
+    Color.YELLOW
+);
+
+# ============================================================
+# END ZRCE VERSION 3.3 TEST
+# ============================================================
+
+# ============================================================
+# MULTI-DAY BACKTEST STATISTICS (ALL LOADED BARS)
+# This section does not modify trade signals or execution.
+# Only closed trades count; one SPY share, no fees/slippage.
+# ============================================================
+
+input showBacktestStats = yes;
+
+def btClosedTrade = simExit and !newDay;
+def btTradePL = if btClosedTrade then simSafeTradePL else 0;
+
+def btTrades = CompoundValue(1,
+    btTrades[1] + (if btClosedTrade then 1 else 0), 0);
+def btWins = CompoundValue(1,
+    btWins[1] + (if btClosedTrade and btTradePL > 0 then 1 else 0), 0);
+def btLosses = CompoundValue(1,
+    btLosses[1] + (if btClosedTrade and btTradePL < 0 then 1 else 0), 0);
+def btBreakeven = CompoundValue(1,
+    btBreakeven[1] + (if btClosedTrade and btTradePL == 0 then 1 else 0), 0);
+
+def btNetPL = CompoundValue(1, btNetPL[1] + btTradePL, 0);
+def btGrossProfit = CompoundValue(1,
+    btGrossProfit[1] + (if btTradePL > 0 then btTradePL else 0), 0);
+def btGrossLoss = CompoundValue(1,
+    btGrossLoss[1] + (if btTradePL < 0 then -btTradePL else 0), 0);
+
+def btEquityPeak = CompoundValue(1,
+    Max(btEquityPeak[1], btNetPL), 0);
+def btDrawdown = btEquityPeak - btNetPL;
+def btMaxDrawdown = CompoundValue(1,
+    Max(btMaxDrawdown[1], btDrawdown), 0);
+
+plot BacktestEquity = btNetPL;
+BacktestEquity.Hide();
+BacktestEquity.SetDefaultColor(Color.CYAN);
+
+AddLabel(showBacktestStats,
+    "BACKTEST | CLOSED " + btTrades +
+    " | W " + btWins +
+    " | L " + btLosses +
+    " | BE " + btBreakeven +
+    " | WIN% " +
+    (if btTrades > 0 then AsText(Round(100 * btWins / btTrades, 1)) else "N/A"),
+    Color.CYAN);
+
+AddLabel(showBacktestStats,
+    "BACKTEST NET $" + AsText(Round(btNetPL, 2)) +
+    " | AVG $" +
+    (if btTrades > 0 then AsText(Round(btNetPL / btTrades, 2)) else "N/A") +
+    " | PF " +
+    (if btGrossLoss > 0 then AsText(Round(btGrossProfit / btGrossLoss, 2)) else "N/A"),
+    if btNetPL >= 0 then Color.GREEN else Color.RED);
+
+AddLabel(showBacktestStats,
+    "BACKTEST GROSS +$" + AsText(Round(btGrossProfit, 2)) +
+    " / -$" + AsText(Round(btGrossLoss, 2)) +
+    " | MAX CLOSED DD $" + AsText(Round(btMaxDrawdown, 2)),
+    Color.GRAY);
+
+AddLabel(showBacktestStats,
+    "BACKTEST AVG WIN $" +
+    (if btWins > 0 then AsText(Round(btGrossProfit / btWins, 2)) else "N/A") +
+    " | AVG LOSS -$" +
+    (if btLosses > 0 then AsText(Round(btGrossLoss / btLosses, 2)) else "N/A"),
+    Color.GRAY);
+
+
+# ============================================================
+# BACKTEST V1.1: INDEPENDENT TRADE ACCOUNTING DIAGNOSTICS
+# Read-only diagnostics: does not alter the v3.3 simulator.
+# ============================================================
+
+input showBacktestAudit = yes;
+input showBacktestAuditBubbles = yes;
+
+# Count entries independently of simExit.
+def auditEntry = simBuy or simSell;
+def auditExit = simExit;
+
+# Detect an existing position discarded by newDay.
+def auditDayResetPosition =
+    newDay and simPriorPosition != 0 and simPosition == 0;
+
+# Detect other transitions that the normal exit detector misses.
+def auditUncountedFlat =
+    !newDay and simPriorPosition != 0 and
+    simPosition == 0 and !auditExit;
+
+# Detect direct position reversals (not expected in current logic).
+def auditReversal =
+    simPriorPosition != 0 and simPosition != 0 and
+    simPriorPosition != simPosition;
+
+def auditEntriesTotal = CompoundValue(1,
+    auditEntriesTotal[1] + (if auditEntry then 1 else 0), 0);
+def auditExitsTotal = CompoundValue(1,
+    auditExitsTotal[1] + (if auditExit then 1 else 0), 0);
+def auditDayResetsTotal = CompoundValue(1,
+    auditDayResetsTotal[1] +
+    (if auditDayResetPosition then 1 else 0), 0);
+def auditUncountedTotal = CompoundValue(1,
+    auditUncountedTotal[1] +
+    (if auditUncountedFlat then 1 else 0), 0);
+def auditReversalsTotal = CompoundValue(1,
+    auditReversalsTotal[1] +
+    (if auditReversal then 1 else 0), 0);
+
+def auditExpectedOpen = auditEntriesTotal - auditExitsTotal -
+    auditDayResetsTotal - auditUncountedTotal;
+def auditOpenFlag = if simPosition != 0 then 1 else 0;
+def auditMismatch = auditExpectedOpen != auditOpenFlag;
+
+AddLabel(showBacktestAudit,
+    "AUDIT ENTRIES " + auditEntriesTotal +
+    " | EXITS " + auditExitsTotal +
+    " | RESET LOST " + auditDayResetsTotal +
+    " | UNCOUNTED " + auditUncountedTotal +
+    " | REVERSALS " + auditReversalsTotal,
+    if auditDayResetsTotal > 0 or auditUncountedTotal > 0 or
+       auditReversalsTotal > 0 then Color.YELLOW else Color.CYAN);
+
+AddLabel(showBacktestAudit,
+    "AUDIT OPEN EXPECTED " + auditExpectedOpen +
+    " | ACTUAL " + auditOpenFlag +
+    " | MATCH " + (if auditMismatch then "NO" else "YES"),
+    if auditMismatch then Color.RED else Color.GREEN);
+
+AddChartBubble(showBacktestAuditBubbles and auditDayResetPosition,
+    high, "AUDIT: POSITION LOST AT DAY RESET", Color.RED, yes);
+AddChartBubble(showBacktestAuditBubbles and auditUncountedFlat,
+    high, "AUDIT: EXIT NOT COUNTED", Color.RED, yes);
+AddChartBubble(showBacktestAuditBubbles and auditReversal,
+    high, "AUDIT: DIRECT REVERSAL", Color.YELLOW, yes);
+
+# Hidden diagnostic plots can be inspected in the TOS data box.
+plot AuditEntryEvent = if auditEntry then 1 else 0;
+plot AuditExitEvent = if auditExit then 1 else 0;
+plot AuditResetEvent = if auditDayResetPosition then 1 else 0;
+AuditEntryEvent.Hide();
+AuditExitEvent.Hide();
+AuditResetEvent.Hide();
+
+# Stage A acceptance status: accounting can reconcile despite lost positions.
+def stageAAuditFail =
+    auditMismatch or auditDayResetsTotal > 0 or
+    auditUncountedTotal > 0 or auditReversalsTotal > 0;
+AddLabel(showBacktestAudit,
+    if !stageAChartOK then "STAGE A AUDIT: INVALID CHART"
+    else if stageAAuditFail then "STAGE A AUDIT: FAIL - REVIEW EVENTS"
+    else if auditEntriesTotal == 0 then "STAGE A AUDIT: NO ENTRIES TO VERIFY"
+    else "STAGE A AUDIT: ACCOUNTING PASS",
+    if !stageAChartOK or stageAAuditFail then Color.RED
+    else if auditEntriesTotal == 0 then Color.YELLOW else Color.GREEN);
+
+
+# ============================================================
+# NATIVE STRATEGY REPORT - V1.4
+# Explicit sides and size: one SPY share, no automatic reversals.
+# AddOrder displays on the NEXT bar using the recorded event price.
+# No negative offsets/look-ahead. Bubbles identify actual model event bars.
+# This is a report of the inherited simulator, not next-open execution.
+# ============================================================
+AddOrder(OrderType.BUY_TO_OPEN,
+    simBuy, simEntry, 1, Color.CYAN, Color.CYAN,
+    "SIM SPY LONG - PRIOR BAR EVENT");
+AddOrder(OrderType.SELL_TO_OPEN,
+    simSell, simEntry, 1, Color.MAGENTA, Color.MAGENTA,
+    "SIM SPY SHORT - PRIOR BAR EVENT");
+AddOrder(OrderType.SELL_TO_CLOSE,
+    simExit and simExitDirection == 1, simExitPrice, 1,
+    Color.YELLOW, Color.YELLOW,
+    if simStopHit then "SIM LONG STOP - PRIOR BAR EVENT"
+    else if simTargetHit then "SIM LONG TARGET - PRIOR BAR EVENT"
+    else "SIM LONG SESSION EXIT - PRIOR BAR EVENT");
+AddOrder(OrderType.BUY_TO_CLOSE,
+    simExit and simExitDirection == -1, simExitPrice, 1,
+    Color.YELLOW, Color.YELLOW,
+    if simStopHit then "SIM SHORT STOP - PRIOR BAR EVENT"
+    else if simTargetHit then "SIM SHORT TARGET - PRIOR BAR EVENT"
+    else "SIM SHORT SESSION EXIT - PRIOR BAR EVENT");
+
+# Prevent the native report from retaining an orphan position after reset.
+# This fallback is NOT counted by inherited simulator statistics.
+# Any use of it fails the audit; do not accept that sample's performance.
+AddOrder(OrderType.SELL_TO_CLOSE,
+    auditDayResetPosition and simPriorPosition == 1, close[1], 1,
+    Color.RED, Color.RED, "AUDIT FAIL - LONG DAY RESET FALLBACK");
+AddOrder(OrderType.BUY_TO_CLOSE,
+    auditDayResetPosition and simPriorPosition == -1, close[1], 1,
+    Color.RED, Color.RED, "AUDIT FAIL - SHORT DAY RESET FALLBACK");
+
+AddLabel(yes, "NATIVE REPORT: EVENT PRICES / ARROWS 1 BAR LATER", Color.YELLOW);
+
+# V1.4 execution diagnostics (all loaded bars).
+def v14EntryExits = CompoundValue(1,
+    v14EntryExits[1] + (if simEntryBarExit then 1 else 0), 0);
+def v14GapStops = CompoundValue(1,
+    v14GapStops[1] + (if simGapStop then 1 else 0), 0);
+def v14Ambiguous = CompoundValue(1,
+    v14Ambiguous[1] + (if simAmbiguousBar then 1 else 0), 0);
+AddLabel(yes, "V1.4 FILLS | ENTRY-BAR EXITS " + v14EntryExits +
+    " | GAP STOPS " + v14GapStops + " | AMBIGUOUS " + v14Ambiguous,
+    if v14Ambiguous > 0 then Color.YELLOW else Color.CYAN);
+AddChartBubble(showMockTrades and simAmbiguousBar, simExitPrice,
+    "BOTH TOUCHED: STOP FIRST", Color.YELLOW, simExitDirection < 0);
+AddChartBubble(showMockTrades and simGapStop, simExitPrice,
+    "GAP STOP: OPEN FILL", Color.YELLOW, simExitDirection < 0);
