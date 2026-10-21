@@ -37,11 +37,13 @@ SQLite replaces the earlier proposed Parquet/DuckDB starting design to give this
 
 ## Changing strategies
 
-Most small changes are editable in the sidebar: zone size, meeting tolerance, cooldown, minimum R/R, stop lookback, entry-direction filter, long/short selection, zone-run or fixed-R target, position size, full spread, slippage, fees, session times and date-specific early closes. Save a preset JSON to reproduce a configuration. Changing controls does not modify an existing saved run; click Run to create another result.
+Most small changes are editable in the sidebar: zone size, meeting tolerance, cooldown, minimum R/R, stop lookback, long/short selection, zone-run or fixed-R target, position size, full spread, slippage, fees, session times and date-specific early closes. Save a preset JSON to reproduce a configuration. Changing controls does not modify an existing saved run; click Run to create another result.
 
 For structural rule changes, edit **lib/strategy.mjs**. `ZRCE.onOpen` receives only the new minute's open and prior completed minute history. It updates completed 5m zones/targets and produces a candidate. `ZRCE.onClose` advances the Z/R/C state after a minute closes. **lib/engine.mjs** handles orders, one-second exits and reports; **lib/store.mjs** handles data. Charting and the web service do not need to change for ordinary strategy-rule changes. Restart the server after code changes. Run `node --test tests/*.test.mjs` after changing rules or execution.
 
 ## Model specification
+
+The current entry rule watches the first 10 seconds of the minute after confirmation: calls trigger at confirmation close + $0.02, puts at close − $0.02. The prior entry-direction checkbox has been removed. The confirmed-trend filter is enabled by default: uptrends allow calls, downtrends allow puts, sideways permits both, and unclear blocks entries. The first eligible confirmed classification is at 10:05 for a 09:30 session open. The trend is checked when C closes; existing trades retain their stops and targets. Uncheck Filter entries by confirmed trend to compare against the unfiltered strategy. Restart the server and run a new backtest to use these rules; saved results retain their original trades.
 
 See **STRATEGY.md** for source mapping and execution details. This is a research port with intentional changes to fills; it is **not yet reconciled against a matching Thinkorswim dataset/report**. Existing Thinkorswim's five trades / −$1.34 sample cannot be reproduced from synthetic data. Import actual history and compare matching dates/trade events before using results for strategy conclusions.
 
@@ -54,3 +56,13 @@ Automated tests cover aggregation, timezone/DST, timestamp encodings, atomic CSV
 Vendor format reference: https://databento.com/docs/portal and https://databento.com/docs/examples/basics-historical/encodings .
 
 Saved reports also preserve the original per-day zones and signal annotations plus an engine source hash. Historical overlays remain tied to that run when rules are edited later. Sample 1c / 2c / 5c spread presets are in presets/.
+
+## Progress and stopping a backtest
+
+A prominent progress panel above the chart shows completed/total trading days, percentage, current date, simulated trade count, elapsed time and approximate remaining time. It stays visible while scrolling. Preparing dates and finalizing a report are identified separately. Run remains disabled until dataset loading finishes.
+
+Click **Stop backtest** in that panel to terminate the current worker without closing the app. The stopped run does not save a partial report; existing reports and market data remain intact. A page refresh reconnects to a job still running on the same updated server. The interface distinguishes completion, cancellation and errors. After upgrading an older running server, restart it once to enable the new cancellation endpoint.
+
+VWAP trend sensitivity: use the slope threshold slider above the chart. Default $0.005/min; lower values allow gentler directional trends, higher values widen the sideways band. Classification uses VWAP slope alone, with the existing 25-minute slope and two consecutive 5-minute confirmations. The preview updates immediately; Run backtest applies the setting to entries and saves it with the report. Opening a saved report restores its original trend timeline.
+
+Zone/reversal rules (engine 0.5.0): Z may stop up to $0.05 short of the zone, and Z/R wicks may extend at most $0.05 beyond its far edge. R must be the opposite color to Z. C must close above the Z demand zone for calls or below the Z supply zone for puts; it need not exceed R close or match its color. Entry remains C close +/- $0.02 in seconds 0–9 of E. Restart the server and create a new backtest to apply these rules.

@@ -1,8 +1,10 @@
 // ZRCE Stage A: rule module, independent of storage, charting and execution.
 // Reference: reference/ZRCE_STAGE_A_STRATEGY_v1.4_SIM_ONLY.txt.
+import {DEFAULT_SLOPE_THRESHOLD} from './trend.mjs';
 import {round} from './market.mjs';
-export const defaults={zoneSize:0.05,meetingTolerance:0.05,cooldownMinutes:10,minRR:1,stopLookback:3,directionGate:true,direction:'both',targetMode:'zone',fixedRR:2,shares:100,spread:0.02,slippage:0,feePerShare:0,initialCapital:100000,sessionStart:'09:30',sessionEnd:'16:00',sessionOverrides:{}};
-export function validateConfig(input={}){const c={...defaults,...input};for(const [k,min,max] of [['zoneSize',0.001,10],['meetingTolerance',0,10],['cooldownMinutes',0,120],['minRR',0,100],['stopLookback',1,30],['fixedRR',0.1,100],['shares',1,1000000],['spread',0,10],['slippage',0,10],['feePerShare',0,10],['initialCapital',1,1e10]]){if(typeof c[k]!=='number'||!Number.isFinite(c[k])||c[k]<min||c[k]>max)throw Error(`Invalid ${k}: expected ${min}–${max}`);}for(const k of ['shares','stopLookback','cooldownMinutes'])if(!Number.isInteger(c[k]))throw Error(`${k} must be an integer`);if(!['both','long','short'].includes(c.direction)||!['zone','fixedRR'].includes(c.targetMode)||typeof c.directionGate!=='boolean')throw Error('Invalid strategy selection');for(const k of ['sessionStart','sessionEnd'])if(!/^\d{2}:\d{2}$/.test(c[k])||clock(c[k])>=1440||Number(c[k].slice(3))>59)throw Error(`Invalid ${k}`);if(clock(c.sessionStart)>=clock(c.sessionEnd))throw Error('Session start must precede end');if(!c.sessionOverrides||typeof c.sessionOverrides!=='object'||Array.isArray(c.sessionOverrides))throw Error('Session overrides must be a date-to-close-time object');for(const [d,v] of Object.entries(c.sessionOverrides)){if(!/^\d{4}-\d{2}-\d{2}$/.test(d)||!/^\d{2}:\d{2}$/.test(v)||clock(v)>clock(c.sessionEnd)||clock(v)<=clock(c.sessionStart)||Number(v.slice(3))>59)throw Error('Invalid session override');}return c;}
+export const ENTRY_OFFSET=0.02,ENTRY_WINDOW_SECONDS=10,ZONE_TOLERANCE=0.05;
+export const defaults={zoneSize:0.05,meetingTolerance:0.05,cooldownMinutes:10,minRR:1,stopLookback:3,trendFilter:true,trendSlopeThreshold:DEFAULT_SLOPE_THRESHOLD,direction:'both',targetMode:'zone',fixedRR:2,shares:100,spread:0.02,slippage:0,feePerShare:0,initialCapital:100000,sessionStart:'09:30',sessionEnd:'16:00',sessionOverrides:{}};
+export function validateConfig(input={}){const c={...defaults,...input};delete c.directionGate;for(const [k,min,max] of [['trendSlopeThreshold',0,0.05],['zoneSize',0.001,10],['meetingTolerance',0,10],['cooldownMinutes',0,120],['minRR',0,100],['stopLookback',1,30],['fixedRR',0.1,100],['shares',1,1000000],['spread',0,10],['slippage',0,10],['feePerShare',0,10],['initialCapital',1,1e10]]){if(typeof c[k]!=='number'||!Number.isFinite(c[k])||c[k]<min||c[k]>max)throw Error(`Invalid ${k}: expected ${min}–${max}`);}for(const k of ['shares','stopLookback','cooldownMinutes'])if(!Number.isInteger(c[k]))throw Error(`${k} must be an integer`);if(typeof c.trendFilter!=='boolean')throw Error('Invalid trendFilter: expected boolean');if(!['both','long','short'].includes(c.direction)||!['zone','fixedRR'].includes(c.targetMode))throw Error('Invalid strategy selection');for(const k of ['sessionStart','sessionEnd'])if(!/^\d{2}:\d{2}$/.test(c[k])||clock(c[k])>=1440||Number(c[k].slice(3))>59)throw Error(`Invalid ${k}`);if(clock(c.sessionStart)>=clock(c.sessionEnd))throw Error('Session start must precede end');if(!c.sessionOverrides||typeof c.sessionOverrides!=='object'||Array.isArray(c.sessionOverrides))throw Error('Session overrides must be a date-to-close-time object');for(const [d,v] of Object.entries(c.sessionOverrides)){if(!/^\d{4}-\d{2}-\d{2}$/.test(d)||!/^\d{2}:\d{2}$/.test(v)||clock(v)>clock(c.sessionEnd)||clock(v)<=clock(c.sessionStart)||Number(v.slice(3))>59)throw Error('Invalid session override');}return c;}
 export const clock=s=>Number(s.slice(0,2))*60+Number(s.slice(3));
 export class ZRCE {
  constructor(config){this.c=config;this.history=[];this.state=0;this.demand=0;this.supply=0;this.d={phase:0,run:null,target:null};this.s={phase:0,run:null,target:null};this.events=[];this.zones=[];this.rejections={};}
@@ -20,29 +22,29 @@ export class ZRCE {
    if(dn)this.zones.push({t:bar.t,side:'demand',bottom:this.demand,top:this.demand+c.zoneSize});
    if(sn)this.zones.push({t:bar.t,side:'supply',bottom:this.supply-c.zoneSize,top:this.supply});
   }
-  this.current={...bar,demandTop:this.demand?this.demand+c.zoneSize:0,supplyBottom:this.supply?this.supply-c.zoneSize:0};
+  this.current={...bar,demandBottom:this.demand,demandTop:this.demand?this.demand+c.zoneSize:0,supplyBottom:this.supply?this.supply-c.zoneSize:0,supplyTop:this.supply};
   if(Math.abs(this.state)!==3)return null;
   const dir=this.state===3?1:-1;
   if((dir===1&&c.direction==='short')||(dir===-1&&c.direction==='long'))return null;
   if(!contiguous(Math.max(3,c.stopLookback))){this.reject('missing prior minutes');return null;}
-  if(c.directionGate&&((dir===1&&bar.o<prev.c)||(dir===-1&&bar.o>prev.c))){this.reject('entry direction');return null;}
-  const look=h.slice(-c.stopLookback),entry=round(bar.o),stop=round(dir===1?Math.min(...look.map(x=>x.l)):Math.max(...look.map(x=>x.h)));
+  const look=h.slice(-c.stopLookback),entry=Number((prev.c+dir*ENTRY_OFFSET).toFixed(8)),stop=round(dir===1?Math.min(...look.map(x=>x.l)):Math.max(...look.map(x=>x.h)));
   const target=c.targetMode==='zone'?(dir===1?this.d.target:this.s.target):entry+dir*Math.abs(entry-stop)*c.fixedRR;
   if(target===null||!Number.isFinite(target)){this.reject('no completed target');return null;}
   const tp=round(target),risk=dir*(entry-stop),reward=dir*(tp-entry);
   if(risk<=0||reward<=0){this.reject('invalid stop/target');return null;}if(reward+1e-8<risk*c.minRR){this.reject('minimum reward/risk');return null;}
-  return {dir,stop,target:tp,reference:bar.o,t:bar.t,reason:'Z → R → C; entry at next minute open',signalTime:prev.t+60};
+  return {dir,stop,target:tp,reference:entry,triggerPrice:entry,confirmationClose:prev.c,expiresAt:bar.t+ENTRY_WINDOW_SECONDS,t:bar.t,reason:'Z → R → C; confirmation close +/- $0.02 within first 10 seconds',signalTime:prev.t+60};
  }
  onClose(bar){const c=this.c,h=this.history,prev=h.at(-1),two=h.at(-2),old=this.state;const continuous=prev&&prev.t+60===bar.t;
   if(!continuous&&h.length)this.state=0;
   else if(old>=10)this.state=old===10?0:old-1;
-  else if(old===1)this.state=bar.c>bar.o?2:10+c.cooldownMinutes;
-  else if(old===2)this.state=bar.c>bar.o&&bar.c>prev.c&&two&&bar.c>two.demandTop?3:10+c.cooldownMinutes;
-  else if(old===-1)this.state=bar.c<bar.o?-2:10+c.cooldownMinutes;
-  else if(old===-2)this.state=bar.c<bar.o&&bar.c<prev.c&&two&&bar.c<two.supplyBottom?-3:10+c.cooldownMinutes;
+  // Keep the zone from Z, even if the next 5m boundary updates the current zone.
+  else if(old===1)this.state=bar.c>bar.o&&bar.l>=prev.demandBottom-ZONE_TOLERANCE-1e-9?2:10+c.cooldownMinutes;
+  else if(old===2)this.state=two&&bar.c>two.demandTop+1e-9?3:10+c.cooldownMinutes;
+  else if(old===-1)this.state=bar.c<bar.o&&bar.h<=prev.supplyTop+ZONE_TOLERANCE+1e-9?-2:10+c.cooldownMinutes;
+  else if(old===-2)this.state=two&&bar.c<two.supplyBottom-1e-9?-3:10+c.cooldownMinutes;
   else if(Math.abs(old)===3)this.state=0;
-  else if(this.demand>0&&bar.c<bar.o&&bar.o>this.demand+c.zoneSize&&bar.l<=this.demand+c.zoneSize)this.state=1;
-  else if(this.supply>0&&bar.c>bar.o&&bar.o<this.supply-c.zoneSize&&bar.h>=this.supply-c.zoneSize)this.state=-1;
+  else if(this.demand>0&&bar.c<bar.o&&bar.o>this.demand+c.zoneSize&&bar.l<=this.demand+c.zoneSize+ZONE_TOLERANCE+1e-9&&bar.l>=this.demand-ZONE_TOLERANCE-1e-9)this.state=1;
+  else if(this.supply>0&&bar.c>bar.o&&bar.o<this.supply-c.zoneSize&&bar.h>=this.supply-c.zoneSize-ZONE_TOLERANCE-1e-9&&bar.h<=this.supply+ZONE_TOLERANCE+1e-9)this.state=-1;
   else this.state=0;
   if([1,2,3,-1,-2,-3].includes(this.state)&&this.state!==old)this.events.push({t:bar.t,availableAt:bar.t+60,label:({1:'Z',2:'R',3:'C'})[Math.abs(this.state)],dir:Math.sign(this.state),price:this.state>0?bar.l:bar.h});
   this.history.push({...this.current,...bar});if(this.history.length>60)this.history.shift();

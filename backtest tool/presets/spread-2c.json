@@ -4,7 +4,6 @@
   "cooldownMinutes": 10,
   "minRR": 1,
   "stopLookback": 3,
-  "directionGate": true,
   "direction": "both",
   "targetMode": "zone",
   "fixedRR": 2,
@@ -15,5 +14,7 @@
   "initialCapital": 100000,
   "sessionStart": "09:30",
   "sessionEnd": "16:00",
-  "sessionOverrides": {}
+  "sessionOverrides": {},
+  "trendFilter": true,
+  "trendSlopeThreshold": 0.005
 }

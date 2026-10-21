@@ -9,4 +9,5 @@ export function openStore(root){mkdirSync(root,{recursive:true});const db=new Da
  `);return db;}
 export function listData(db){return db.prepare(`SELECT d.*, count(b.t) AS rows, min(b.day) AS firstDay,max(b.day) AS lastDay,count(DISTINCT b.day) AS days FROM datasets d LEFT JOIN bars b ON b.dataset=d.id GROUP BY d.id`).all();}
 export const listDays=(db,id)=>db.prepare('SELECT day,count(*) AS rows FROM bars WHERE dataset=? GROUP BY day ORDER BY day').all(id);
-export const dayBars=(db,id,day)=>db.prepare('SELECT t,minute,o,h,l,c,v FROM bars WHERE dataset=? AND day=? ORDER BY t').all(id,day);
+// Pin the day index: the primary-key scan otherwise walks the full dataset per day.
+export const dayBars=(db,id,day)=>db.prepare('SELECT t,minute,o,h,l,c,v FROM bars INDEXED BY bars_day WHERE dataset=? AND day=? ORDER BY t').all(id,day);
