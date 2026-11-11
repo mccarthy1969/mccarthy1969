@@ -1,6 +1,6 @@
 {
   "zoneSize": 0.05,
-  "meetingTolerance": 0.05,
+  "meetingTolerance": 0.03,
   "cooldownMinutes": 10,
   "minRR": 1,
   "stopLookback": 3,
